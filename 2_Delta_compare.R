@@ -98,6 +98,7 @@ saveRDS(delta_con,         file.path(out_dir, "DeltaCon_distance_AD_CTL.rds"))
 saveRDS(delta_con_similarity,
         file.path(out_dir, "DeltaCon_similarity_AD_CTL.rds"))
 save.image("~/Pau/Delta_image.RData")
+load("/STORAGE/csbig/jruiz/Redes_Pau/Delta_image.RData")
 
 end_time <- Sys.time()
 cat("🕒 Total execution time:", round(end_time - start_time, 2), "seconds\n")

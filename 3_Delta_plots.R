@@ -20,9 +20,11 @@ contrib_df <- tibble(
   arrange(desc(Contribution))
 
 # Selecciona genes que más cambian (Z_robust > 3)
-top_genes <- contrib_df %>% filter(Z_robust > 4) %>% pull(Gene)
+top_genes <- contrib_df %>% filter(Z_robust > 5) %>% pull(Gene)
 
 # ===================== PLOT DE CAMBIO DE AFINIDAD ===================== #
+#Affinity means qué tan "conectado" o integrado está un gen en la red, 
+#en términos de similitudes con otros genes
 Affinity_df <- tibble(
   Gene = top_genes,
   AD = rowSums(sqrt(S_AD)[top_genes, ]),      # afinidad en AD

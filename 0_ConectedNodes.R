@@ -28,7 +28,7 @@ library(tools)
 # Assumes the input file is pre-sorted by MI
 # --------------------------------------------------------
 #                               Set a huge slice of edgelist that could have all nodes
-analyze_network <- function(file_path, max_rows = 100000000) {
+analyze_network <- function(file_path, max_rows = 1000000) {
   
   # Load the edge list (up to max_rows)
   edge_list <- vroom(
@@ -71,9 +71,9 @@ analyze_network <- function(file_path, max_rows = 100000000) {
 # --------------------------------------------------------
 # Analyze both networks
 # --------------------------------------------------------
-results_control <- analyze_network("/STORAGE/csbig/ROSMAP_HCN_counts_control.sort")
+results_control <- analyze_network("/STORAGE/csbig/jruiz/Redes_Pau/ROSMAP_HCN_counts_control.sort")
 
-results_AD <- analyze_network("/STORAGE/csbig/ROSMAP_HCN_counts_AD.sort")
+results_AD <- analyze_network("/STORAGE/csbig/jruiz/Redes_Pau/ROSMAP_HCN_counts_AD.sort")
 
 # --------------------------------------------------------
 # Function to generate and print a detailed report
@@ -110,12 +110,12 @@ cutoff_AD <- results_AD$cutoff_row
 
 saveRDS(
   cutoff_control, 
-  file = "/STORAGE/csbig/control_cutoff_links.rds"
+  file = "/STORAGE/csbig/jruiz/Redes_Pau/0_control_cutoff_links.rds"
 )
 
 saveRDS(
   cutoff_AD, 
-  file = "/STORAGE/csbig/AD_cutoff_links.rds"
+  file = "/STORAGE/csbig/jruiz/Redes_Pau/0_AD_cutoff_links.rds"
 )
 
 cat("\n════════════════════════════════════\n")
@@ -125,5 +125,40 @@ cat("A7 cutoff row: ", cutoff_control, "\n")
 cat("A9 cutoff row: ", cutoff_AD, "\n")
 cat("════════════════════════════════════\n")
 
-save.image("/STORAGE/csbig/cut.RData")
+save.image("/STORAGE/csbig/jruiz/Redes_Pau/0_cut.RData")
+
+
+
+
+
+
+
+### CON 0.5 PVALUE#####
+#════════════════════════════════════
+#NETWORK ANALYSIS REPORT - ROSMAP_HCN_counts_control
+#════════════════════════════════════
+#• Total unique nodes: 9146
+#• Rows analyzed: 1000000
+#• Cutoff row found: 999600
+#• Nodes covered: 9146/9146
+#• Coverage percent: 100%
+#════════════════════════════════════
+
+#════════════════════════════════════
+#NETWORK ANALYSIS REPORT - ROSMAP_HCN_counts_AD
+#════════════════════════════════════
+#• Total unique nodes: 7296
+#• Rows analyzed: 1000000
+#• Cutoff row found: 999369
+#• Nodes covered: 7296/7296
+#• Coverage percent: 100%
+#════════════════════════════════════
+
+#════════════════════════════════════
+#INDIVIDUAL THRESHOLDS SAVED
+#════════════════════════════════════
+#A7 cutoff row:  999600 
+#A9 cutoff row:  999369 
+#═══════════════════════════════════
+
 
