@@ -11,7 +11,7 @@ options(stringsAsFactors = FALSE)
 
 # ===================== PATHS ===================== #
 base_dir <- "/STORAGE/csbig/jruiz/Redes_Pau"
-out_base <- file.path(base_dir, "1_1_Centrality_comparison_pEmpi")
+out_base <- file.path(base_dir, "1_1_Centrality_comparison")
 dir.create(out_base, recursive = TRUE, showWarnings = FALSE)
 
 # ===================== NETWORKS (manual, readable) ===================== #
@@ -35,7 +35,7 @@ centralities <- c("degree", "pagerank", "betweenness")
 # ============================================================
 load_graph <- function(file) {
   df <- vroom(
-    file.path(base_dir, file),
+    file.path(base_dir,"1_Edgelist", file),
     col_names = c("GenA", "GenB", "MI")
   )
   graph_from_data_frame(df, directed = FALSE)
