@@ -3,12 +3,15 @@
 suppressPackageStartupMessages({
   library(dplyr)
   library(vroom)
+  library(readr)
+  library(tidyr)
   library(ggplot2)
   library(ggrepel)
   library(purrr)
   library(biomaRt)
-  library(grid)    # unit()
-  library(scales)  # pseudo_log_trans, label_number
+  library(grid)      # unit()
+  library(scales)    # pseudo_log_trans, label_number, percent
+  library(patchwork) # <-- para armar el grid con el barplot como 1er panel
 })
 
 options(stringsAsFactors = FALSE)
@@ -17,9 +20,14 @@ options(stringsAsFactors = FALSE)
 base_dir <- "/STORAGE/csbig/jruiz/Redes_Pau/1_1_Centrality_comparison_rho"
 
 centralities <- c("degree", "pagerank", "betweenness")
-networks     <- c("PCC", "DLPFC", "HCN", "MAYO_CRB", "MAYO_TC")
 
-TOP_PROP <- 0.001  # top 1% absolute by |Δ percentile rank|
+# Redes "estándar" para los scatter (como tus *_COMMON.tsv)
+networks_scatter <- c("PCC", "DLPFC", "HCN", "CRB", "TC")
+
+# Redes tal como existen en los FULL/COMMON del barplot (MAYO_*)
+networks_bar <- c("PCC", "DLPFC", "HCN", "MAYO_CRB", "MAYO_TC")
+
+TOP_PROP <- 0.003  # top 0.3% by |Δ percentile rank|
 
 OUT_DIR <- file.path(base_dir, "QC_plots")
 dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
@@ -30,7 +38,6 @@ CENT_LABELS <- c(degree = "Degree", pagerank = "PageRank", betweenness = "Betwee
 SIGMA <- 1e-8
 plog  <- scales::pseudo_log_trans(base = 10, sigma = SIGMA)
 
-# Breaks that won't crash with free scales, and helps prevent label overlap
 safe_breaks <- function(n = 2) {
   function(x) {
     x <- x[is.finite(x)]
@@ -41,7 +48,6 @@ safe_breaks <- function(n = 2) {
   }
 }
 
-# Compact axis labels (k, M, B, T) using label_number(scale_cut=...)
 fmt_si <- scales::label_number(
   accuracy = 1,
   scale_cut = scales::cut_si("")
@@ -53,9 +59,12 @@ cent_pretty <- function(cent_name) {
   out
 }
 
-# ===================== HELPERS ===================== #
+# ===================== HELPERS (scatter inputs) ===================== #
 read_common_tbl <- function(net, cent) {
-  f <- file.path(base_dir, cent, paste0(net, "_", cent, "_COMMON.tsv"))
+  file_net <- dplyr::recode(net, CRB = "MAYO_CRB", TC = "MAYO_TC", .default = net)
+  std_net  <- net
+  
+  f <- file.path(base_dir, cent, paste0(file_net, "_", cent, "_COMMON.tsv"))
   if (!file.exists(f)) return(NULL)
   
   df <- vroom::vroom(f, show_col_types = FALSE)
@@ -65,12 +74,15 @@ read_common_tbl <- function(net, cent) {
   if (length(miss) > 0) stop("Missing columns in ", f, ": ", paste(miss, collapse = ", "))
   
   df %>%
-    mutate(network = net, centrality = cent) %>%
+    mutate(network = std_net, centrality = cent) %>%
     dplyr::select(network, centrality, everything())
 }
 
 read_spearman_tbl <- function(net) {
-  f <- file.path(base_dir, "spearman", paste0(net, "_spearman.tsv"))
+  file_net <- dplyr::recode(net, CRB = "MAYO_CRB", TC = "MAYO_TC", .default = net)
+  std_net  <- net
+  
+  f <- file.path(base_dir, "spearman", paste0(file_net, "_spearman.tsv"))
   if (!file.exists(f)) return(NULL)
   
   df <- vroom::vroom(f, show_col_types = FALSE)
@@ -81,7 +93,7 @@ read_spearman_tbl <- function(net) {
   
   df %>%
     mutate(
-      network    = as.character(network),
+      network    = std_net,
       centrality = as.character(centrality)
     ) %>%
     dplyr::select(network, centrality, n_common_genes, spearman_rho, spearman_pvalue)
@@ -106,7 +118,7 @@ map_ensembl_to_hgnc <- function(ens_ids) {
 
 # ===================== LOAD ALL COMMON TABLES ===================== #
 all_common <- purrr::map_dfr(
-  networks,
+  networks_scatter,
   \(net) purrr::map_dfr(centralities, \(cent) read_common_tbl(net, cent))
 )
 if (nrow(all_common) == 0) stop("No *_COMMON.tsv files were loaded. Check paths and filenames.")
@@ -120,7 +132,7 @@ all_common <- all_common %>%
   left_join(ann, by = c("gene_key" = "ensembl_gene_id")) %>%
   mutate(gene_label = ifelse(!is.na(hgnc_symbol) & hgnc_symbol != "", hgnc_symbol, NA_character_))
 
-# ===================== TOP GENES PER PANEL (top 1% by |Δ percentile|) ===================== #
+# ===================== TOP GENES PER PANEL (top by |Δ percentile|) ===================== #
 top_tbl <- all_common %>%
   group_by(network, centrality) %>%
   mutate(abs_dperc = abs(delta_perc)) %>%
@@ -128,10 +140,10 @@ top_tbl <- all_common %>%
   ungroup()
 
 # ===================== LOAD SPEARMAN RESULTS ===================== #
-spearman_all <- purrr::map_dfr(networks, read_spearman_tbl)
+spearman_all <- purrr::map_dfr(networks_scatter, read_spearman_tbl)
 if (nrow(spearman_all) == 0) stop("No spearman/<NET>_spearman.tsv files were loaded. Check paths and filenames.")
 
-# ===================== RHO LABEL POSITION (TOP-RIGHT, robust under transforms + free scales) ===================== #
+# ===================== RHO LABEL POSITION (robust under transforms + free scales) ===================== #
 rho_pos <- all_common %>%
   group_by(network, centrality) %>%
   summarise(
@@ -152,15 +164,15 @@ rho_pos <- all_common %>%
     y_raw_max = ifelse(y_raw_max == y_raw_min, y_raw_max + 1e-12, y_raw_max),
     
     rho_abs   = abs(spearman_rho),
-    rho_label = sprintf("\u03c1 = %.3f", spearman_rho),
+    rho_label = sprintf("rho = %.3f", spearman_rho),
     
     x_tr_min = plog$transform(x_raw_min),
     x_tr_max = plog$transform(x_raw_max),
     y_tr_min = plog$transform(y_raw_min),
     y_tr_max = plog$transform(y_raw_max),
     
-    x_tr = x_tr_min + 0.78 * (x_tr_max - x_tr_min),
-    y_tr = y_tr_min + 0.90 * (y_tr_max - y_tr_min),
+    x_tr = x_tr_min + 0.92 * (x_tr_max - x_tr_min),
+    y_tr = y_tr_min + 0.97 * (y_tr_max - y_tr_min),
     
     x = plog$inverse(x_tr),
     y = plog$inverse(y_tr)
@@ -174,9 +186,11 @@ p_rho_tile <- ggplot(spearman_all, aes(x = network, y = centrality, fill = spear
     limits = rev(centralities),
     labels = unname(CENT_LABELS[rev(centralities)])
   ) +
-  scale_fill_gradient2(
-    low = "#B2182B", mid = "white", high = "#2166AC",
-    midpoint = 0, limits = c(-1, 1), name = expression(rho)
+  scale_fill_gradient(
+    low    = "white",
+    high   = "#2166AC",
+    limits = c(0, 1),
+    name   = expression(rho)
   ) +
   labs(
     title = "Rank correlation of gene centrality between AD and control networks (Spearman \u03c1)",
@@ -194,12 +208,123 @@ print(p_rho_tile)
 ggsave(file.path(OUT_DIR, "SpearmanRho_tile.pdf"), p_rho_tile, width = 8.5, height = 3.2)
 ggsave(file.path(OUT_DIR, "SpearmanRho_tile.png"), p_rho_tile, width = 8.5, height = 3.2, dpi = 300)
 
-# ===================== PLOT B: ONE GRID PER CENTRALITY ===================== #
-make_scatter_grid_for_cent <- function(cent_name) {
+# ===================== BARPLOT (degree) -> como 1er panel del grid ===================== #
+# (Se mantiene igual tu barplot; solo lo metemos en una función para insertarlo como panel 1)
+make_barplot_degree <- function() {
   
-  df_cent  <- all_common %>% filter(centrality == cent_name)
-  top_cent <- top_tbl     %>% filter(centrality == cent_name)
-  rho_cent <- rho_pos     %>% filter(centrality == cent_name)
+  # Pretty labels para el barplot (MAYO_* -> CRB/TC)
+  NET_LABELS_BAR <- c(
+    PCC      = "PCC",
+    DLPFC    = "DLPFC",
+    HCN      = "HCN",
+    MAYO_CRB = "CRB",
+    MAYO_TC  = "TC"
+  )
+  
+  FILL_COLORS <- c(
+    "Unique Control" = "#377EB8",
+    "Shared"         = "#CFCFCF",
+    "Unique AD"      = "#E41A1C"
+  )
+  
+  BAR_ALPHA <- 0.78
+  LABEL_MIN_PROP <- 0.035
+  
+  read_full_common <- function(net, cent) {
+    f_full   <- file.path(base_dir, cent, paste0(net, "_", cent, "_FULL.tsv"))
+    f_common <- file.path(base_dir, cent, paste0(net, "_", cent, "_COMMON.tsv"))
+    if (!file.exists(f_full))   stop("Missing: ", f_full)
+    if (!file.exists(f_common)) stop("Missing: ", f_common)
+    
+    full   <- readr::read_tsv(f_full,   show_col_types = FALSE)
+    common <- readr::read_tsv(f_common, show_col_types = FALSE)
+    
+    n_full   <- nrow(full)
+    n_common <- nrow(common)
+    
+    n_unique_ad  <- sum(!is.na(full$AD)  &  is.na(full$CTL))
+    n_unique_ctl <- sum( is.na(full$AD)  & !is.na(full$CTL))
+    
+    if ((n_unique_ad + n_unique_ctl + n_common) != n_full) {
+      warning("Counts don't add up for ", net)
+    }
+    
+    tibble(
+      network = net,
+      n_full = n_full,
+      n_common = n_common,
+      n_unique_ctl = n_unique_ctl,
+      n_unique_ad = n_unique_ad
+    )
+  }
+  
+  summary_tbl <- bind_rows(lapply(networks_bar, read_full_common, cent = "degree")) %>%
+    mutate(network_label = unname(NET_LABELS_BAR[network]))
+  
+  plot_df <- summary_tbl %>%
+    dplyr::select(network_label, n_common, n_unique_ctl, n_unique_ad) %>%
+    tidyr::pivot_longer(
+      cols = c(n_unique_ctl, n_common, n_unique_ad),
+      names_to = "category",
+      values_to = "n_genes"
+    ) %>%
+    mutate(
+      category = dplyr::recode(
+        category,
+        n_unique_ctl = "Unique Control",
+        n_common     = "Shared",
+        n_unique_ad  = "Unique AD"
+      ),
+      category = factor(category, levels = c("Unique Control", "Shared", "Unique AD")),
+      network_label = factor(network_label, levels = unname(NET_LABELS_BAR[networks_bar]))
+    ) %>%
+    group_by(network_label) %>%
+    mutate(
+      prop = n_genes / sum(n_genes),
+      label_pct = ifelse(prop >= LABEL_MIN_PROP, scales::percent(prop, accuracy = 0.1), "")
+    ) %>%
+    ungroup()
+  
+  ggplot(plot_df, aes(x = network_label, y = prop, fill = category)) +
+    geom_col(
+      width = 0.72,
+      color = "white",
+      linewidth = 0.6,
+      alpha = BAR_ALPHA
+    ) +
+    geom_text(
+      aes(label = label_pct),
+      position = position_stack(vjust = 0.5),
+      size = 4,
+      color = "black"
+    ) +
+    scale_fill_manual(values = FILL_COLORS, drop = FALSE) +
+    scale_y_continuous(
+      labels = scales::percent_format(accuracy = 1),
+      expand = expansion(mult = c(0, 0.03))
+    ) +
+    labs(
+      title = NULL,
+      x = NULL,
+      y = "Gene proportion",
+      fill = NULL
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      axis.text.x = element_text(face = "bold"),
+      panel.grid.minor = element_blank(),
+      legend.position = "right"
+    )
+}
+
+p_bar_degree <- make_barplot_degree()
+
+# ===================== SCATTER: plot por red (misma construcción, sin facet) ===================== #
+make_scatter_one_network <- function(cent_name, net_name) {
+  
+  df_cent  <- all_common %>% filter(centrality == cent_name, network == net_name)
+  top_cent <- top_tbl     %>% filter(centrality == cent_name, network == net_name)
+  rho_cent <- rho_pos     %>% filter(centrality == cent_name, network == net_name)
   
   top_cent_lab <- top_cent %>% filter(!is.na(gene_label) & gene_label != "")
   cent_title <- cent_pretty(cent_name)
@@ -208,24 +333,27 @@ make_scatter_grid_for_cent <- function(cent_name) {
     geom_point(aes(color = HigherNetwork), alpha = 0.22, size = 1.1) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 0.5, color = "grey45") +
     geom_point(data = top_cent, aes(color = HigherNetwork), alpha = 0.95, size = 2.8) +
-    
-    geom_text_repel(
+    ggrepel::geom_label_repel(
       data = top_cent_lab,
       aes(label = gene_label),
+      inherit.aes = TRUE,
+      fill = "white",
+      label.size = 0.25,
+      label.r = unit(0.15, "lines"),
+      label.padding = unit(0.22, "lines"),
       color = "black",
-      fontface = "bold",
+      fontface = "plain",
       size = 3.3,
-      box.padding = 0.55,
-      point.padding = 0.35,
+      box.padding = 0.75,
+      point.padding = 0.55,
       segment.alpha = 0.55,
       segment.size = 0.25,
       min.segment.length = 0,
       max.overlaps = Inf,
-      force = 1.8,
-      force_pull = 0.25,
+      force = 3.0,
+      force_pull = 0.20,
       seed = 1
     ) +
-    
     geom_label(
       data = rho_cent,
       aes(x = x, y = y, label = rho_label, fill = rho_abs),
@@ -235,38 +363,122 @@ make_scatter_grid_for_cent <- function(cent_name) {
       label.padding = unit(0.28, "lines"),
       alpha = 0.98,
       size = 3.9,
-      color = "black"
+      color = "black",
+      fontface = "bold"
     ) +
-    
-    facet_wrap(~ network, scales = "free", nrow = 2) +
     scale_color_manual(values = c("AD" = "#E41A1C", "Control" = "#377EB8")) +
-    
     scale_fill_gradient(
       limits = c(0, 1),
       low  = "#C9A227",
       high = "#FFF7CC",
       guide = "none"
     ) +
-    
     labs(
-      title = paste0(cent_title, " centrality: AD vs control"),
-      subtitle = paste0("Top ", TOP_PROP * 100, "% genes by |Δ percentile rank|"),
+      title = net_name,
       x = paste0(cent_title, " (AD network)"),
       y = paste0(cent_title, " (Control network)"),
-      color = "Higher\nnetwork"
+      color = paste0("Higher\n", cent_title)
     ) +
+    scale_x_continuous(trans = plog, breaks = safe_breaks(n = 2), labels = fmt_si) +
+    scale_y_continuous(trans = plog, breaks = safe_breaks(n = 2), labels = fmt_si) +
+    theme_minimal(base_size = 13) +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(margin = margin(t = 4)),
+      axis.text.y = element_text(margin = margin(r = 4))
+    )
+}
+
+# ===================== PLOT B: ONE GRID PER CENTRALITY ===================== #
+make_scatter_grid_for_cent <- function(cent_name) {
+  
+  cent_title <- cent_pretty(cent_name)
+  
+  # --- Degree: barplot como 1er panel + 5 scatters (mismo tamaño) ---
+  if (cent_name == "degree") {
     
-    scale_x_continuous(
-      trans  = plog,
-      breaks = safe_breaks(n = 2),
-      labels = fmt_si
-    ) +
-    scale_y_continuous(
-      trans  = plog,
-      breaks = safe_breaks(n = 2),
-      labels = fmt_si
-    ) +
+    # Orden de paneles: BAR, luego PCC, DLPFC, HCN, CRB, TC
+    scat_list <- lapply(networks_scatter, \(nn) make_scatter_one_network(cent_name, nn) +
+                          theme(legend.position = "none"))
     
+    p_bar_panel <- p_bar_degree + labs(title = "Proportion of genes by network")
+    
+    # Grid 3x2: todos del mismo tamaño
+    p_grid <- wrap_plots(
+      c(list(p_bar_panel), scat_list),
+      ncol = 3
+    ) +
+      plot_annotation(
+        title = paste0(cent_title, " centrality: AD vs control")
+      ) &
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = 0.5)
+      )
+    
+    return(p_grid)
+  }
+  
+  # --- Otras centralidades: se queda EXACTO como lo tenías (facet_wrap) ---
+  df_cent  <- all_common %>% filter(centrality == cent_name)
+  top_cent <- top_tbl     %>% filter(centrality == cent_name)
+  rho_cent <- rho_pos     %>% filter(centrality == cent_name)
+  
+  top_cent_lab <- top_cent %>% filter(!is.na(gene_label) & gene_label != "")
+  
+  ggplot(df_cent, aes(x = AD, y = CTL)) +
+    geom_point(aes(color = HigherNetwork), alpha = 0.22, size = 1.1) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 0.5, color = "grey45") +
+    geom_point(data = top_cent, aes(color = HigherNetwork), alpha = 0.95, size = 2.8) +
+    ggrepel::geom_label_repel(
+      data = top_cent_lab,
+      aes(label = gene_label),
+      inherit.aes = TRUE,
+      fill = "white",
+      label.size = 0.25,
+      label.r = unit(0.15, "lines"),
+      label.padding = unit(0.22, "lines"),
+      color = "black",
+      fontface = "plain",
+      size = 3.3,
+      box.padding = 0.75,
+      point.padding = 0.55,
+      segment.alpha = 0.55,
+      segment.size = 0.25,
+      min.segment.length = 0,
+      max.overlaps = Inf,
+      force = 3.0,
+      force_pull = 0.20,
+      seed = 1
+    ) +
+    geom_label(
+      data = rho_cent,
+      aes(x = x, y = y, label = rho_label, fill = rho_abs),
+      inherit.aes = FALSE,
+      label.size = 0.25,
+      label.r = unit(0.20, "lines"),
+      label.padding = unit(0.28, "lines"),
+      alpha = 0.98,
+      size = 3.9,
+      color = "black",
+      fontface = "bold"
+    ) +
+    facet_wrap(~ network, scales = "free", nrow = 2) +
+    scale_color_manual(values = c("AD" = "#E41A1C", "Control" = "#377EB8")) +
+    scale_fill_gradient(
+      limits = c(0, 1),
+      low  = "#C9A227",
+      high = "#FFF7CC",
+      guide = "none"
+    ) +
+    labs(
+      title = paste0(cent_title, " centrality: AD vs control"),
+      x = paste0(cent_title, " (AD network)"),
+      y = paste0(cent_title, " (Control network)"),
+      color = paste0("Higher\n", cent_title)
+    ) +
+    scale_x_continuous(trans = plog, breaks = safe_breaks(n = 2), labels = fmt_si) +
+    scale_y_continuous(trans = plog, breaks = safe_breaks(n = 2), labels = fmt_si) +
     theme_minimal(base_size = 13) +
     theme(
       plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
