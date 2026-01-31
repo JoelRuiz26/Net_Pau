@@ -88,53 +88,77 @@ length(unique(top5_up_down_by_region$term_simple))
 
 ########################################################
 #Plot
+
 REG_ORDER <- c("CRB","TC","DLPFC","HCN","PCC")
 
-plot_df <- top5_up_down_by_region %>%
+plot_df2 <- top5_up_down_by_region %>%
   group_by(term_simple) %>%
   mutate(absNES_max = max(abs(NES), na.rm = TRUE)) %>%
   ungroup() %>%
   mutate(
     region      = factor(region, levels = REG_ORDER),
     sig         = -log10(p.adjust),
-    term_simple = reorder(term_simple, absNES_max)
+    term_simple = reorder(term_simple, absNES_max),
+    
+    # categorías de FDR (ajústalas si quieres)
+    fdr_cat = dplyr::case_when(
+      p.adjust <= 1e-3 ~ "≤1e-3",
+      p.adjust <= 1e-2 ~ "≤1e-2",
+      p.adjust <= 5e-2 ~ "≤5e-2",
+      TRUE             ~ ">5e-2"
+    ),
+    
+    # estrellas (clásico y MUY legible)
+    star = dplyr::case_when(
+      p.adjust <= 1e-3 ~ "***",
+      p.adjust <= 1e-2 ~ "**",
+      p.adjust <= 5e-2 ~ "*",
+      TRUE             ~ ""
+    ),
+    
+    # alpha continuo (suaviza no-significativos sin “tapar” el NES)
+    alpha_sig = scales::rescale(sig, to = c(0.25, 1.0), from = range(sig, finite = TRUE))
   )
 
-p <- ggplot(plot_df, aes(region, term_simple)) +
-  geom_point(aes(size = sig, fill = NES), shape = 21, color = "grey25") +
-  scale_size(
-    range = c(0, 8),
-    name  = "-log10(FDR)",
-    guide = guide_legend(
-      override.aes = list(fill = "black", color = "black")
-    )
+p_altA <- ggplot(plot_df2, aes(region, term_simple)) +
+  geom_tile(aes(fill = NES, alpha = alpha_sig),
+            color = "grey92", linewidth = 0.4) +
+  geom_text(aes(label = star),
+            fontface = "bold", size = 4, color = "grey10") +
+  scale_fill_gradient2(
+    name = "NES",
+    low  = "#2F4B7C",
+    mid  = "#F4F4F4",
+    high = "#8B1E3F",
+    midpoint = 0
   ) +
-  scale_fill_gradient2(name = "NES") +
-  theme_bw() +
+  scale_alpha(guide = "none") +
+  labs(caption = "FDR: * ≤ 0.05, ** ≤ 0.01, *** ≤ 0.001") +
+  theme_minimal(base_size = 12) +
   theme(
     axis.title   = element_blank(),
-    panel.grid.major = element_line(color = "grey92"),
-    panel.grid.minor = element_blank(),
-    axis.text.y  = element_text(size = 8, face = "bold"),
-    axis.text.x  = element_text(face = "bold", size = 13),
+    panel.grid   = element_blank(),
+    axis.text.y  = element_text(size = 9, face = "bold"),
+    axis.text.x  = element_text(size = 13, face = "bold"),
     legend.title = element_text(face = "bold"),
-    legend.text  = element_text(face = "bold")
+    legend.text  = element_text(face = "bold"),
+    plot.caption = element_text(size = 10, face = "bold", hjust = 0)
   )
 
-ggsave(
-  filename = file.path(out_dir, "3_3_Bubble_terms.png"),
-  plot = p,
-  width = 8.5,
-  height = 10,
-  dpi = 600
-)
+# Márgenes + guardar
+p2 <- p_altA + theme(plot.margin = margin(t = 8, r = 60, b = 8, l = 8))
 
-ggsave(
-  filename = file.path(out_dir, "3_3_Bubble_terms.pdf"),
-  plot = p,
-  width = 8.5,
-  height = 10
-)
+save.image(file.path(out_dir, "3_4_Image_GSEA.RData"))
+#load("/STORAGE/csbig/jruiz/Redes_Pau/3_GSEA_REACTOME/3_4_Image_GSEA.RData")
+
+saveRDS(p2, file.path(out_dir, "3_3_Heatmap_Stars_alpha_plot.rds"))
+
+ggsave(file.path(out_dir, "3_3_Heatmap_Stars_alpha.png"),
+       p2, width = 16, height = 9, units = "in", dpi = 600, limitsize = FALSE)
+
+ggsave(file.path(out_dir, "3_3_Heatmap_Stars_alpha.pdf"),
+       p2, width = 16, height = 9, units = "in", limitsize = FALSE, device = cairo_pdf)
+
 
 
 

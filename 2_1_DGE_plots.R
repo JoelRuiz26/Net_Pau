@@ -280,6 +280,10 @@ p <- ggplot(all_df, aes(x = x_sig, y = y_fc)) +
     panel.grid.minor = element_blank()
   )
 
+
+saveRDS(p, file.path(out_dir, "VolcanoRow_byRegion_AD_vs_Control_plot.rds"))
+
+
 # ============================================================
 # 6) SAVE
 # ============================================================
