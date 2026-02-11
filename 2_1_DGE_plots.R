@@ -24,7 +24,7 @@ dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 FDR_CUT <- 0.05
 LFC_CUT <- 0.5
-TOP_N_PER_SIDE <- 8
+TOP_N_PER_SIDE <- 7
 
 USE_FDR_ON_X <- TRUE  # TRUE: -log10(adj.P.Val); FALSE: -log10(P.Value)
 P_FLOOR <- 1e-300
@@ -82,7 +82,7 @@ all_df <- all_df %>%
   left_join(region_map, by = "region_raw") %>%
   mutate(
     region = ifelse(is.na(region), region_raw, region),
-    region = factor(region, levels = c("CRB","TC","DLPFC","HCN","PCC"))
+    region = factor(region, levels = c("PCC","HCN","DLPFC","TC","CRB"))
   )
 
 message("\n[CHECK] Genes per region:")
@@ -103,8 +103,6 @@ all_df <- all_df %>%
     pass_fdr   = adj.P.Val <= FDR_CUT,
     pass_lfc   = abs(logFC) >= LFC_CUT,
     pass_both  = pass_fdr & pass_lfc,
-    
-    # ✅ professional labels
     direction = case_when(
       pass_both & logFC > 0 ~ "Overexpressed",
       pass_both & logFC < 0 ~ "Underexpressed",
@@ -143,6 +141,7 @@ all_df <- all_df %>%
     label    = hgnc_symbol
   )
 
+
 # ============================================================
 # 4) LABELS: TOP N UP + TOP N DOWN PER REGION (HGNC-only)
 # ============================================================
@@ -167,26 +166,26 @@ label_df <- all_df %>%
 message("\n[CHECK] Labels per region (HGNC-only):")
 print(label_df %>% count(region, name = "n_labels") %>% arrange(desc(n_labels)))
 
-# ✅ needed because you use label_over / label_under in the plot
 label_over  <- label_df %>% filter(direction == "Overexpressed")
 label_under <- label_df %>% filter(direction == "Underexpressed")
 
+
 # ============================================================
-# 5) PLOT: ONE ROW, SHARED Y AXIS (clean) + colored segments
+# 5) PLOT: VOLCANO TRADICIONAL (X=log2FC, Y=-log10(FDR)) EN FILAS
 # ============================================================
 COL_OVER  <- "#D7301F"
 COL_UNDER <- "#2C7FB8"
 COL_NS    <- "grey75"
 
-x_cut_line <- -log10(pmax(FDR_CUT, P_FLOOR))
+y_cut_line <- -log10(pmax(FDR_CUT, P_FLOOR))
 
-p <- ggplot(all_df, aes(x = x_sig, y = y_fc)) +
+p <- ggplot(all_df, aes(x = y_fc, y = x_sig)) +
   # thresholds
-  geom_hline(yintercept = 0, linewidth = 0.35, color = "grey35") +
-  geom_hline(yintercept = c(-LFC_CUT, LFC_CUT), linetype = "dashed", linewidth = 0.35, color = "grey35") +
-  geom_vline(xintercept = x_cut_line, linetype = "dashed", linewidth = 0.35, color = "grey35") +
+  geom_vline(xintercept = 0, linewidth = 0.35, color = "grey35") +
+  geom_vline(xintercept = c(-LFC_CUT, LFC_CUT), linetype = "dashed", linewidth = 0.35, color = "grey35") +
+  geom_hline(yintercept = y_cut_line, linetype = "dashed", linewidth = 0.35, color = "grey35") +
   
-  # points: NS lighter; sig visible
+  # points
   geom_point(
     data = all_df %>% filter(direction == "Not significant"),
     aes(color = direction),
@@ -205,55 +204,60 @@ p <- ggplot(all_df, aes(x = x_sig, y = y_fc)) +
     size = 1.6, alpha = 0.90
   ) +
   
-  # labels Overexpressed (red segments)
+  # labels Overexpressed (empuja a la derecha)
   ggrepel::geom_label_repel(
     data = label_over,
     aes(label = label),
     color = "grey10",
     segment.color = COL_OVER,
     show.legend = FALSE,
-    size = 3.05,
+    size = 4.2,
     fill = NA,
     label.size = 0,
     label.padding = grid::unit(0.12, "lines"),
-    direction = "both",
-    force = 3.5,
-    force_pull = 0.35,
-    box.padding = 0.35,
-    point.padding = 0.45,
+    direction = "y",
+    nudge_x = 0.4,
+    force = 5,
+    force_pull = 0,
+    box.padding = 0.9,
+    point.padding = 0.7,
     max.overlaps = Inf,
     min.segment.length = 0,
     segment.alpha = 0.75,
     segment.size = 0.35,
-    seed = 2
+    max.time = 10,
+    max.iter = 200000,
+    seed = 2092
   ) +
   
-  # labels Underexpressed (blue segments)
+  # labels Underexpressed (empuja a la izquierda)
   ggrepel::geom_label_repel(
     data = label_under,
     aes(label = label),
     color = "grey10",
     segment.color = COL_UNDER,
     show.legend = FALSE,
-    size = 3.05,
+    size = 4.2,
     fill = NA,
     label.size = 0,
     label.padding = grid::unit(0.12, "lines"),
-    direction = "both",
-    force = 3.5,
-    force_pull = 0.35,
-    box.padding = 0.35,
-    point.padding = 0.45,
+    direction = "y",
+    nudge_x = -0.4,
+    force = 5,
+    force_pull = 0,
+    box.padding = 0.9,
+    point.padding = 0.7,
     max.overlaps = Inf,
     min.segment.length = 0,
     segment.alpha = 0.75,
     segment.size = 0.35,
+    max.time = 10,
+    max.iter = 200000,
     seed = 2
   ) +
   
-  facet_grid(. ~ region) +
+  facet_grid(region ~ .) +
   
-  # legend order: Overexpressed, Not significant, Underexpressed
   scale_color_manual(
     values = c(
       "Overexpressed"   = COL_OVER,
@@ -262,30 +266,41 @@ p <- ggplot(all_df, aes(x = x_sig, y = y_fc)) +
     ),
     breaks = c("Overexpressed", "Not significant", "Underexpressed")
   ) +
-  
-  guides(color = guide_legend(override.aes = list(shape = 16, size = 3, alpha = 1))) +
+  guides(color = guide_legend(override.aes = list(shape = 16, size = 4, alpha = 1))) +
   
   labs(
-    title = "Differential expression across brain regions",
-    x = expression(-log[10](FDR)),
-    y = expression(log[2]~FC),
+    x = expression(log[2]~FC),
+    y = expression(-log[10](FDR)),
     color = "Expression"
   ) +
   
-  theme_bw(base_size = 12) +
+  # MUY IMPORTANTE: dejar que los labels salgan del panel
+  coord_cartesian(clip = "off") +
+  
+  theme_bw(base_size = 18) +
   theme(
     legend.position = "right",
     strip.background = element_rect(fill = "grey92", color = NA),
-    strip.text.x = element_text(face = "bold"),
-    panel.grid.minor = element_blank()
+    strip.text.y = element_text(face = "bold", size = 18),
+    
+    axis.text  = element_text(size = 16),
+    axis.title = element_text(size = 18, face = "bold"),
+    
+    legend.text  = element_text(size = 15),
+    legend.title = element_text(size = 16, face = "bold"),
+    
+    panel.grid.minor = element_blank(),
+    
+    # margen extra para que quepan labels “afuera”
+    plot.margin = margin(10, 30, 10, 30)
   )
-
 
 saveRDS(p, file.path(out_dir, "VolcanoRow_byRegion_AD_vs_Control_plot.rds"))
 
+# ============================================================
+# 6) SAVE (default razonable, sin aplastar)
+# ============================================================
+ggsave(out_png, p, width = 10.5, height = 15, dpi = 600)
+ggsave(out_pdf, p, width = 10.5, height = 15)
 
-# ============================================================
-# 6) SAVE
-# ============================================================
-ggsave(out_png, p, width = 12.8, height = 6.0, dpi = 600)
-ggsave(out_pdf, p, width = 12.8, height = 6.0)
+

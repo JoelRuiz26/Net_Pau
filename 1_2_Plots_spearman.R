@@ -2,107 +2,73 @@
 
 suppressPackageStartupMessages({
   library(dplyr)
-  library(vroom)
   library(readr)
-  library(tidyr)
+  library(stringr)
+  library(purrr)
+  library(tibble)
   library(ggplot2)
   library(ggrepel)
-  library(purrr)
   library(biomaRt)
-  library(grid)      # unit()
-  library(scales)    # pseudo_log_trans, label_number, percent
-  library(patchwork) # <-- para armar el grid con el barplot como 1er panel
+  library(grid)   # unit()
 })
 
 options(stringsAsFactors = FALSE)
 
-# ===================== CONFIG ===================== #
-base_dir <- "/STORAGE/csbig/jruiz/Redes_Pau/1_1_Centrality_comparison_rho"
+# ============================================================
+# CONFIG
+# ============================================================
+base_dir <- "/STORAGE/csbig/jruiz/Redes_Pau"
 
-centralities <- c("degree", "pagerank", "betweenness")
+# DGE limma
+dge_dir <- file.path(base_dir, "2_1_DGE_limma")
 
-# Redes "estándar" para los scatter (como tus *_COMMON.tsv)
-networks_scatter <- c("PCC", "DLPFC", "HCN", "CRB", "TC")
+# Degree delta percentile (COMMON tables)
+deg_dir <- file.path(base_dir, "1_1_Centrality_comparison_rho", "degree")
 
-# Redes tal como existen en los FULL/COMMON del barplot (MAYO_*)
-networks_bar <- c("PCC", "DLPFC", "HCN", "MAYO_CRB", "MAYO_TC")
+# Output
+out_dir <- file.path(base_dir, "Figures_Grids", "Quadrants_INTERSECTION_only")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-TOP_PROP <- 0.003  # top 0.3% by |Δ percentile rank|
+# Thresholds (match your reporting)
+FDR_CUT <- 0.05
+LFC_CUT <- 0.5
 
-OUT_DIR <- file.path(base_dir, "QC_plots")
-dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+# Top 10% by |delta_perc| per region
+TOP_PCT <- 0.10
 
-CENT_LABELS <- c(degree = "Degree", pagerank = "PageRank", betweenness = "Betweenness")
+# Labels
+LABEL_TOP_N <- 12  # per region, within hit-only
+USE_HGNC <- TRUE
 
-# ===================== TRANSFORM (log-like, safe with zeros) ===================== #
-SIGMA <- 1e-8
-plog  <- scales::pseudo_log_trans(base = 10, sigma = SIGMA)
+# Saving
+out_png <- file.path(out_dir, "Quadrants_LFC_vs_DeltaDegreePercentile_INTERSECTION.png")
+out_pdf <- file.path(out_dir, "Quadrants_LFC_vs_DeltaDegreePercentile_INTERSECTION.pdf")
+out_tsv <- file.path(out_dir, "INTERSECTION_table.tsv")
 
-safe_breaks <- function(n = 2) {
-  function(x) {
-    x <- x[is.finite(x)]
-    if (length(x) == 0) return(numeric(0))
-    rng <- range(x)
-    if (!all(is.finite(rng)) || rng[1] == rng[2]) return(rng[1])
-    scales::pretty_breaks(n = n)(x)
-  }
+# HGNC cache
+map_cache <- file.path(out_dir, "ensembl_to_hgnc_cache.rds")
+
+# Region order
+REG_ORDER <- c("PCC","HCN","DLPFC","TC","CRB")
+
+# ============================================================
+# HELPERS
+# ============================================================
+read_tsv_quiet <- function(path) readr::read_tsv(path, col_types = cols(), progress = FALSE)
+
+norm_key <- function(x) {
+  x %>%
+    str_replace(regex("^ROSMAP_", ignore_case = TRUE), "") %>%
+    str_replace(regex("^MAYO_",   ignore_case = TRUE), "") %>%
+    toupper()
 }
 
-fmt_si <- scales::label_number(
-  accuracy = 1,
-  scale_cut = scales::cut_si("")
-)
-
-cent_pretty <- function(cent_name) {
-  out <- unname(CENT_LABELS[cent_name])
-  if (is.na(out) || length(out) != 1) return(cent_name)
-  out
+top_abs_cut <- function(x, top_pct = 0.10) {
+  stats::quantile(abs(x), probs = 1 - top_pct, na.rm = TRUE, names = FALSE, type = 7)
 }
 
-# ===================== HELPERS (scatter inputs) ===================== #
-read_common_tbl <- function(net, cent) {
-  file_net <- dplyr::recode(net, CRB = "MAYO_CRB", TC = "MAYO_TC", .default = net)
-  std_net  <- net
-  
-  f <- file.path(base_dir, cent, paste0(file_net, "_", cent, "_COMMON.tsv"))
-  if (!file.exists(f)) return(NULL)
-  
-  df <- vroom::vroom(f, show_col_types = FALSE)
-  
-  need <- c("gene", "AD", "CTL", "perc_AD", "perc_CTL", "delta_perc", "HigherNetwork")
-  miss <- setdiff(need, colnames(df))
-  if (length(miss) > 0) stop("Missing columns in ", f, ": ", paste(miss, collapse = ", "))
-  
-  df %>%
-    mutate(network = std_net, centrality = cent) %>%
-    dplyr::select(network, centrality, everything())
-}
-
-read_spearman_tbl <- function(net) {
-  file_net <- dplyr::recode(net, CRB = "MAYO_CRB", TC = "MAYO_TC", .default = net)
-  std_net  <- net
-  
-  f <- file.path(base_dir, "spearman", paste0(file_net, "_spearman.tsv"))
-  if (!file.exists(f)) return(NULL)
-  
-  df <- vroom::vroom(f, show_col_types = FALSE)
-  
-  need <- c("network", "centrality", "n_common_genes", "spearman_rho", "spearman_pvalue")
-  miss <- setdiff(need, colnames(df))
-  if (length(miss) > 0) stop("Missing columns in ", f, ": ", paste(miss, collapse = ", "))
-  
-  df %>%
-    mutate(
-      network    = std_net,
-      centrality = as.character(centrality)
-    ) %>%
-    dplyr::select(network, centrality, n_common_genes, spearman_rho, spearman_pvalue)
-}
-
-# --- Ensembl -> HGNC symbol (biomaRt) ---
 map_ensembl_to_hgnc <- function(ens_ids) {
-  ens_ids <- unique(ens_ids)
-  ens_ids <- sub("\\..*$", "", ens_ids)
+  ens_ids <- unique(sub("\\..*$", "", ens_ids))
   
   mart <- biomaRt::useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
   
@@ -116,393 +82,249 @@ map_ensembl_to_hgnc <- function(ens_ids) {
     distinct(ensembl_gene_id, .keep_all = TRUE)
 }
 
-# ===================== LOAD ALL COMMON TABLES ===================== #
-all_common <- purrr::map_dfr(
-  networks_scatter,
-  \(net) purrr::map_dfr(centralities, \(cent) read_common_tbl(net, cent))
+# ============================================================
+# 1) DISCOVER FILES + PAIR BY NORMALIZED REGION KEY
+# ============================================================
+dge_files <- list.files(dge_dir, pattern = "_limma_AD_vs_Control_allGenes\\.tsv$", full.names = TRUE)
+deg_files <- list.files(deg_dir, pattern = "_degree_COMMON\\.tsv$", full.names = TRUE)
+
+if (length(dge_files) == 0) stop("No limma TSVs found in: ", dge_dir)
+if (length(deg_files) == 0) stop("No degree COMMON TSVs found in: ", deg_dir)
+
+dge_tbl <- tibble(
+  dge_path = dge_files,
+  dge_key_raw = basename(dge_files) %>% str_replace("_limma_AD_vs_Control_allGenes\\.tsv$", ""),
+  join_key = norm_key(dge_key_raw)
 )
-if (nrow(all_common) == 0) stop("No *_COMMON.tsv files were loaded. Check paths and filenames.")
 
-# ===================== BIOMART ANNOTATION ===================== #
-cat("Annotating ENSG -> HGNC with biomaRt...\n")
-ann <- map_ensembl_to_hgnc(all_common$gene)
+deg_tbl <- tibble(
+  deg_path = deg_files,
+  deg_key_raw = basename(deg_files) %>% str_replace("_degree_COMMON\\.tsv$", ""),
+  join_key = norm_key(deg_key_raw)
+)
 
-all_common <- all_common %>%
-  mutate(gene_key = sub("\\..*$", "", gene)) %>%
-  left_join(ann, by = c("gene_key" = "ensembl_gene_id")) %>%
-  mutate(gene_label = ifelse(!is.na(hgnc_symbol) & hgnc_symbol != "", hgnc_symbol, NA_character_))
+pairs <- inner_join(dge_tbl, deg_tbl, by = "join_key") %>% arrange(join_key)
 
-# ===================== TOP GENES PER PANEL (top by |Δ percentile|) ===================== #
-top_tbl <- all_common %>%
-  group_by(network, centrality) %>%
-  mutate(abs_dperc = abs(delta_perc)) %>%
-  slice_max(order_by = abs_dperc, prop = TOP_PROP, with_ties = FALSE) %>%
-  ungroup()
-
-# ===================== LOAD SPEARMAN RESULTS ===================== #
-spearman_all <- purrr::map_dfr(networks_scatter, read_spearman_tbl)
-if (nrow(spearman_all) == 0) stop("No spearman/<NET>_spearman.tsv files were loaded. Check paths and filenames.")
-
-# ===================== RHO LABEL POSITION (robust under transforms + free scales) ===================== #
-rho_pos <- all_common %>%
-  group_by(network, centrality) %>%
-  summarise(
-    x_raw_min = suppressWarnings(min(AD,  na.rm = TRUE)),
-    x_raw_max = suppressWarnings(max(AD,  na.rm = TRUE)),
-    y_raw_min = suppressWarnings(min(CTL, na.rm = TRUE)),
-    y_raw_max = suppressWarnings(max(CTL, na.rm = TRUE)),
-    .groups = "drop"
-  ) %>%
-  left_join(spearman_all, by = c("network", "centrality")) %>%
-  mutate(
-    x_raw_min = ifelse(is.finite(x_raw_min), x_raw_min, 0),
-    x_raw_max = ifelse(is.finite(x_raw_max), x_raw_max, x_raw_min),
-    y_raw_min = ifelse(is.finite(y_raw_min), y_raw_min, 0),
-    y_raw_max = ifelse(is.finite(y_raw_max), y_raw_max, y_raw_min),
-    
-    x_raw_max = ifelse(x_raw_max == x_raw_min, x_raw_max + 1e-12, x_raw_max),
-    y_raw_max = ifelse(y_raw_max == y_raw_min, y_raw_max + 1e-12, y_raw_max),
-    
-    rho_abs   = abs(spearman_rho),
-    rho_label = sprintf("rho = %.3f", spearman_rho),
-    
-    x_tr_min = plog$transform(x_raw_min),
-    x_tr_max = plog$transform(x_raw_max),
-    y_tr_min = plog$transform(y_raw_min),
-    y_tr_max = plog$transform(y_raw_max),
-    
-    x_tr = x_tr_min + 0.92 * (x_tr_max - x_tr_min),
-    y_tr = y_tr_min + 0.97 * (y_tr_max - y_tr_min),
-    
-    x = plog$inverse(x_tr),
-    y = plog$inverse(y_tr)
+if (nrow(pairs) == 0) {
+  stop(
+    "No matching region keys between DGE and degree COMMON after normalization.\n",
+    "DGE join keys: ", paste(head(unique(dge_tbl$join_key), 10), collapse = ", "), "\n",
+    "DEG join keys: ", paste(head(unique(deg_tbl$join_key), 10), collapse = ", ")
   )
-
-# ===================== PLOT A: HEATMAP of Spearman rho ===================== #
-p_rho_tile <- ggplot(spearman_all, aes(x = network, y = centrality, fill = spearman_rho)) +
-  geom_tile(color = "white", linewidth = 0.6) +
-  geom_text(aes(label = sprintf("%.3f", spearman_rho)), size = 4) +
-  scale_y_discrete(
-    limits = rev(centralities),
-    labels = unname(CENT_LABELS[rev(centralities)])
-  ) +
-  scale_fill_gradient(
-    low    = "white",
-    high   = "#2166AC",
-    limits = c(0, 1),
-    name   = expression(rho)
-  ) +
-  labs(
-    title = "Rank correlation of gene centrality between AD and control networks (Spearman \u03c1)",
-    x = NULL, y = NULL
-  ) +
-  theme_minimal(base_size = 13) +
-  theme(
-    plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
-    axis.text.x = element_text(face = "bold"),
-    axis.text.y = element_text(face = "bold"),
-    panel.grid.minor = element_blank()
-  )
-
-print(p_rho_tile)
-ggsave(file.path(OUT_DIR, "SpearmanRho_tile.pdf"), p_rho_tile, width = 8.5, height = 3.2)
-ggsave(file.path(OUT_DIR, "SpearmanRho_tile.png"), p_rho_tile, width = 8.5, height = 3.2, dpi = 300)
-
-# ===================== BARPLOT (degree) -> como 1er panel del grid ===================== #
-# (Se mantiene igual tu barplot; solo lo metemos en una función para insertarlo como panel 1)
-make_barplot_degree <- function() {
-  
-  # Pretty labels para el barplot (MAYO_* -> CRB/TC)
-  NET_LABELS_BAR <- c(
-    PCC      = "PCC",
-    DLPFC    = "DLPFC",
-    HCN      = "HCN",
-    MAYO_CRB = "CRB",
-    MAYO_TC  = "TC"
-  )
-  
-  FILL_COLORS <- c(
-    "Unique Control" = "#377EB8",
-    "Shared"         = "#CFCFCF",
-    "Unique AD"      = "#E41A1C"
-  )
-  
-  BAR_ALPHA <- 0.78
-  LABEL_MIN_PROP <- 0.035
-  
-  read_full_common <- function(net, cent) {
-    f_full   <- file.path(base_dir, cent, paste0(net, "_", cent, "_FULL.tsv"))
-    f_common <- file.path(base_dir, cent, paste0(net, "_", cent, "_COMMON.tsv"))
-    if (!file.exists(f_full))   stop("Missing: ", f_full)
-    if (!file.exists(f_common)) stop("Missing: ", f_common)
-    
-    full   <- readr::read_tsv(f_full,   show_col_types = FALSE)
-    common <- readr::read_tsv(f_common, show_col_types = FALSE)
-    
-    n_full   <- nrow(full)
-    n_common <- nrow(common)
-    
-    n_unique_ad  <- sum(!is.na(full$AD)  &  is.na(full$CTL))
-    n_unique_ctl <- sum( is.na(full$AD)  & !is.na(full$CTL))
-    
-    if ((n_unique_ad + n_unique_ctl + n_common) != n_full) {
-      warning("Counts don't add up for ", net)
-    }
-    
-    tibble(
-      network = net,
-      n_full = n_full,
-      n_common = n_common,
-      n_unique_ctl = n_unique_ctl,
-      n_unique_ad = n_unique_ad
-    )
-  }
-  
-  summary_tbl <- bind_rows(lapply(networks_bar, read_full_common, cent = "degree")) %>%
-    mutate(network_label = unname(NET_LABELS_BAR[network]))
-  
-  plot_df <- summary_tbl %>%
-    dplyr::select(network_label, n_common, n_unique_ctl, n_unique_ad) %>%
-    tidyr::pivot_longer(
-      cols = c(n_unique_ctl, n_common, n_unique_ad),
-      names_to = "category",
-      values_to = "n_genes"
-    ) %>%
-    mutate(
-      category = dplyr::recode(
-        category,
-        n_unique_ctl = "Unique Control",
-        n_common     = "Shared",
-        n_unique_ad  = "Unique AD"
-      ),
-      category = factor(category, levels = c("Unique Control", "Shared", "Unique AD")),
-      network_label = factor(network_label, levels = unname(NET_LABELS_BAR[networks_bar]))
-    ) %>%
-    group_by(network_label) %>%
-    mutate(
-      prop = n_genes / sum(n_genes),
-      label_pct = ifelse(prop >= LABEL_MIN_PROP, scales::percent(prop, accuracy = 0.1), "")
-    ) %>%
-    ungroup()
-  
-  ggplot(plot_df, aes(x = network_label, y = prop, fill = category)) +
-    geom_col(
-      width = 0.72,
-      color = "white",
-      linewidth = 0.6,
-      alpha = BAR_ALPHA
-    ) +
-    geom_text(
-      aes(label = label_pct),
-      position = position_stack(vjust = 0.5),
-      size = 4,
-      color = "black"
-    ) +
-    scale_fill_manual(values = FILL_COLORS, drop = FALSE) +
-    scale_y_continuous(
-      labels = scales::percent_format(accuracy = 1),
-      expand = expansion(mult = c(0, 0.03))
-    ) +
-    labs(
-      title = NULL,
-      x = NULL,
-      y = "Gene proportion",
-      fill = NULL
-    ) +
-    theme_minimal(base_size = 13) +
-    theme(
-      axis.text.x = element_text(face = "bold"),
-      panel.grid.minor = element_blank(),
-      legend.position = "right"
-    )
 }
 
-p_bar_degree <- make_barplot_degree()
+message("Matched regions: ", paste(pairs$join_key, collapse = ", "))
+print(pairs %>% dplyr::select(join_key, dge_key_raw, deg_key_raw))
 
-# ===================== SCATTER: plot por red (misma construcción, sin facet) ===================== #
-make_scatter_one_network <- function(cent_name, net_name) {
-  
-  df_cent  <- all_common %>% filter(centrality == cent_name, network == net_name)
-  top_cent <- top_tbl     %>% filter(centrality == cent_name, network == net_name)
-  rho_cent <- rho_pos     %>% filter(centrality == cent_name, network == net_name)
-  
-  top_cent_lab <- top_cent %>% filter(!is.na(gene_label) & gene_label != "")
-  cent_title <- cent_pretty(cent_name)
-  
-  ggplot(df_cent, aes(x = AD, y = CTL)) +
-    geom_point(aes(color = HigherNetwork), alpha = 0.22, size = 1.1) +
-    geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 0.5, color = "grey45") +
-    geom_point(data = top_cent, aes(color = HigherNetwork), alpha = 0.95, size = 2.8) +
-    ggrepel::geom_label_repel(
-      data = top_cent_lab,
-      aes(label = gene_label),
-      inherit.aes = TRUE,
-      fill = "white",
-      label.size = 0.25,
-      label.r = unit(0.15, "lines"),
-      label.padding = unit(0.22, "lines"),
-      color = "black",
-      fontface = "plain",
-      size = 3.3,
-      box.padding = 0.75,
-      point.padding = 0.55,
-      segment.alpha = 0.55,
-      segment.size = 0.25,
-      min.segment.length = 0,
-      max.overlaps = Inf,
-      force = 3.0,
-      force_pull = 0.20,
-      seed = 1
-    ) +
-    geom_label(
-      data = rho_cent,
-      aes(x = x, y = y, label = rho_label, fill = rho_abs),
-      inherit.aes = FALSE,
-      label.size = 0.25,
-      label.r = unit(0.20, "lines"),
-      label.padding = unit(0.28, "lines"),
-      alpha = 0.98,
-      size = 3.9,
-      color = "black",
-      fontface = "bold"
-    ) +
-    scale_color_manual(values = c("AD" = "#E41A1C", "Control" = "#377EB8")) +
-    scale_fill_gradient(
-      limits = c(0, 1),
-      low  = "#C9A227",
-      high = "#FFF7CC",
-      guide = "none"
-    ) +
-    labs(
-      title = net_name,
-      x = paste0(cent_title, " (AD network)"),
-      y = paste0(cent_title, " (Control network)"),
-      color = paste0("Higher\n", cent_title)
-    ) +
-    scale_x_continuous(trans = plog, breaks = safe_breaks(n = 2), labels = fmt_si) +
-    scale_y_continuous(trans = plog, breaks = safe_breaks(n = 2), labels = fmt_si) +
-    theme_minimal(base_size = 13) +
-    theme(
-      plot.title = element_text(face = "bold", hjust = 0.5),
-      panel.grid.minor = element_blank(),
-      axis.text.x = element_text(margin = margin(t = 4)),
-      axis.text.y = element_text(margin = margin(r = 4))
-    )
-}
-
-# ===================== PLOT B: ONE GRID PER CENTRALITY ===================== #
-make_scatter_grid_for_cent <- function(cent_name) {
-  
-  cent_title <- cent_pretty(cent_name)
-  
-  # --- Degree: barplot como 1er panel + 5 scatters (mismo tamaño) ---
-  if (cent_name == "degree") {
+# ============================================================
+# 2) LOAD + MERGE (per region)
+# ============================================================
+merged_list <- pmap(
+  list(pairs$dge_path, pairs$deg_path, pairs$join_key),
+  function(dge_path, deg_path, join_key) {
     
-    # Orden de paneles: BAR, luego PCC, DLPFC, HCN, CRB, TC
-    scat_list <- lapply(networks_scatter, \(nn) make_scatter_one_network(cent_name, nn) +
-                          theme(legend.position = "none"))
-    
-    p_bar_panel <- p_bar_degree + labs(title = "Proportion of genes by network")
-    
-    # Grid 3x2: todos del mismo tamaño
-    p_grid <- wrap_plots(
-      c(list(p_bar_panel), scat_list),
-      ncol = 3
-    ) +
-      plot_annotation(
-        title = paste0(cent_title, " centrality: AD vs control")
-      ) &
-      theme(
-        plot.title = element_text(face = "bold", size = 15, hjust = 0.5)
+    dge <- read_tsv_quiet(dge_path) %>%
+      transmute(
+        gene,
+        gene_clean = sub("\\..*$", "", gene),
+        logFC      = as.numeric(logFC),
+        adj.P.Val  = as.numeric(adj.P.Val)
+      ) %>%
+      mutate(
+        pass_dge = (adj.P.Val <= FDR_CUT & abs(logFC) >= LFC_CUT)
       )
     
-    return(p_grid)
+    deg <- read_tsv_quiet(deg_path) %>%
+      transmute(
+        gene,
+        gene_clean = sub("\\..*$", "", gene),
+        delta_perc = as.numeric(delta_perc)
+      )
+    
+    # merge by gene (exact). If your ids differ by versions, join by gene_clean.
+    df <- inner_join(dge, deg, by = "gene") %>%
+      mutate(region = join_key)
+    
+    # if inner_join by gene yields too few due to version mismatch, fallback to gene_clean join:
+    if (nrow(df) < 100) {
+      df <- inner_join(dge, deg, by = "gene_clean", suffix = c("_dge", "_deg")) %>%
+        transmute(
+          gene = gene_dge,
+          gene_clean,
+          logFC,
+          adj.P.Val,
+          pass_dge,
+          delta_perc,
+          region = join_key
+        )
+    }
+    
+    # per-region cutoff for top10% |delta_perc|
+    cut <- top_abs_cut(df$delta_perc, top_pct = TOP_PCT)
+    
+    df %>%
+      mutate(
+        delta_abs_cut = cut,
+        top_delta10   = abs(delta_perc) >= cut,
+        hit           = pass_dge & top_delta10
+      )
+  }
+)
+
+all_df <- bind_rows(merged_list) %>%
+  mutate(region = factor(region, levels = REG_ORDER))
+
+# sanity check
+message("\n[CHECK] Intersection counts per region:")
+print(all_df %>%
+        group_by(region) %>%
+        summarise(
+          n_merged = n(),
+          n_pass_dge = sum(pass_dge, na.rm = TRUE),
+          n_top10 = sum(top_delta10, na.rm = TRUE),
+          n_hit = sum(hit, na.rm = TRUE),
+          .groups = "drop"
+        ) %>% arrange(desc(n_hit)))
+
+hit_df <- all_df %>% filter(hit)
+
+if (nrow(hit_df) == 0) {
+  stop("Intersection is empty (n_hit=0). Check thresholds or whether degree COMMON and limma genes match.")
+}
+
+# ============================================================
+# 3) HGNC ANNOTATION (only for hit_df)
+# ============================================================
+if (USE_HGNC) {
+  if (file.exists(map_cache)) {
+    message("\nLoading cached HGNC mapping: ", map_cache)
+    map_tbl <- readRDS(map_cache)
+  } else {
+    message("\nQuerying biomaRt for HGNC symbols (hit genes only)...")
+    map_tbl <- map_ensembl_to_hgnc(hit_df$gene_clean)
+    saveRDS(map_tbl, map_cache)
+    message("Saved mapping cache: ", map_cache)
   }
   
-  # --- Otras centralidades: se queda EXACTO como lo tenías (facet_wrap) ---
-  df_cent  <- all_common %>% filter(centrality == cent_name)
-  top_cent <- top_tbl     %>% filter(centrality == cent_name)
-  rho_cent <- rho_pos     %>% filter(centrality == cent_name)
-  
-  top_cent_lab <- top_cent %>% filter(!is.na(gene_label) & gene_label != "")
-  
-  ggplot(df_cent, aes(x = AD, y = CTL)) +
-    geom_point(aes(color = HigherNetwork), alpha = 0.22, size = 1.1) +
-    geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 0.5, color = "grey45") +
-    geom_point(data = top_cent, aes(color = HigherNetwork), alpha = 0.95, size = 2.8) +
-    ggrepel::geom_label_repel(
-      data = top_cent_lab,
-      aes(label = gene_label),
-      inherit.aes = TRUE,
-      fill = "white",
-      label.size = 0.25,
-      label.r = unit(0.15, "lines"),
-      label.padding = unit(0.22, "lines"),
-      color = "black",
-      fontface = "plain",
-      size = 3.3,
-      box.padding = 0.75,
-      point.padding = 0.55,
-      segment.alpha = 0.55,
-      segment.size = 0.25,
-      min.segment.length = 0,
-      max.overlaps = Inf,
-      force = 3.0,
-      force_pull = 0.20,
-      seed = 1
-    ) +
-    geom_label(
-      data = rho_cent,
-      aes(x = x, y = y, label = rho_label, fill = rho_abs),
-      inherit.aes = FALSE,
-      label.size = 0.25,
-      label.r = unit(0.20, "lines"),
-      label.padding = unit(0.28, "lines"),
-      alpha = 0.98,
-      size = 3.9,
-      color = "black",
-      fontface = "bold"
-    ) +
-    facet_wrap(~ network, scales = "free", nrow = 2) +
-    scale_color_manual(values = c("AD" = "#E41A1C", "Control" = "#377EB8")) +
-    scale_fill_gradient(
-      limits = c(0, 1),
-      low  = "#C9A227",
-      high = "#FFF7CC",
-      guide = "none"
-    ) +
-    labs(
-      title = paste0(cent_title, " centrality: AD vs control"),
-      x = paste0(cent_title, " (AD network)"),
-      y = paste0(cent_title, " (Control network)"),
-      color = paste0("Higher\n", cent_title)
-    ) +
-    scale_x_continuous(trans = plog, breaks = safe_breaks(n = 2), labels = fmt_si) +
-    scale_y_continuous(trans = plog, breaks = safe_breaks(n = 2), labels = fmt_si) +
-    theme_minimal(base_size = 13) +
-    theme(
-      plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
-      plot.subtitle = element_text(size = 10.8, hjust = 0.5),
-      strip.text = element_text(face = "bold"),
-      legend.position = "right",
-      panel.grid.minor = element_blank(),
-      axis.text.x = element_text(margin = margin(t = 4)),
-      axis.text.y = element_text(margin = margin(r = 4))
-    )
+  hit_df <- hit_df %>%
+    left_join(map_tbl, by = c("gene_clean" = "ensembl_gene_id")) %>%
+    mutate(label = ifelse(!is.na(hgnc_symbol) & hgnc_symbol != "", hgnc_symbol, gene_clean))
+} else {
+  hit_df <- hit_df %>% mutate(label = gene_clean)
 }
 
-for (cent in centralities) {
-  p <- make_scatter_grid_for_cent(cent)
-  print(p)
-  
-  ggsave(
-    filename = file.path(OUT_DIR, paste0("Scatter_", cent, "_Top", TOP_PROP * 100, "pct_by_absDeltaPercentile.pdf")),
-    plot = p, width = 16, height = 8
-  )
-  ggsave(
-    filename = file.path(OUT_DIR, paste0("Scatter_", cent, "_Top", TOP_PROP * 100, "pct_by_absDeltaPercentile.png")),
-    plot = p, width = 16, height = 8, dpi = 300
-  )
-}
+# ============================================================
+# 4) PICK LABELS (top by |delta_perc| then adj.P.Val)
+# ============================================================
+label_df <- hit_df %>%
+  group_by(region) %>%
+  arrange(desc(abs(delta_perc)), adj.P.Val) %>%
+  slice_head(n = LABEL_TOP_N) %>%
+  ungroup()
 
-cat("\nDONE\n")
+# ============================================================
+# 5) PLOT (INTERSECTION ONLY) — nice colors + quadrants
+# ============================================================
+# palette
+COL_POS <- "#D1495B"   # red-ish
+COL_NEG <- "#00798C"   # blue/teal
+COL_LAB <- "grey10"
+
+hit_df <- hit_df %>%
+  mutate(
+    quad = case_when(
+      logFC >= 0 & delta_perc >= 0 ~ "Q1 (+LFC, +Δperc)",
+      logFC <  0 & delta_perc >= 0 ~ "Q2 (-LFC, +Δperc)",
+      logFC <  0 & delta_perc <  0 ~ "Q3 (-LFC, -Δperc)",
+      TRUE                         ~ "Q4 (+LFC, -Δperc)"
+    ),
+    sign_delta = ifelse(delta_perc >= 0, "Δperc ≥ 0", "Δperc < 0")
+  )
+
+# per region cutoff lines (top10% cutoff differs by region)
+cuts_df <- hit_df %>% distinct(region, delta_abs_cut)
+
+p <- ggplot(hit_df, aes(x = logFC, y = delta_perc)) +
+  
+  # quadrant lines
+  geom_vline(xintercept = 0, linewidth = 0.45, color = "grey35") +
+  geom_hline(yintercept = 0, linewidth = 0.45, color = "grey35") +
+  
+  # threshold lines (optional but informative)
+  geom_vline(xintercept = c(-LFC_CUT, LFC_CUT), linetype = "dashed", linewidth = 0.40, color = "grey45") +
+  geom_hline(
+    data = cuts_df, aes(yintercept =  delta_abs_cut),
+    inherit.aes = FALSE, linetype = "dashed", linewidth = 0.40, color = "grey45"
+  ) +
+  geom_hline(
+    data = cuts_df, aes(yintercept = -delta_abs_cut),
+    inherit.aes = FALSE, linetype = "dashed", linewidth = 0.40, color = "grey45"
+  ) +
+  
+  # points (ONLY intersection)
+  geom_point(aes(color = sign_delta), size = 2.2, alpha = 0.85) +
+  
+  # emphasize labeled points
+  geom_point(data = label_df, aes(color = sign_delta), size = 3.0, alpha = 0.98) +
+  
+  # labels
+  ggrepel::geom_label_repel(
+    data = label_df,
+    aes(label = label),
+    fill = "white",
+    label.size = 0.25,
+    label.r = unit(0.15, "lines"),
+    label.padding = unit(0.18, "lines"),
+    color = COL_LAB,
+    size = 3.6,
+    box.padding = 0.55,
+    point.padding = 0.35,
+    min.segment.length = 0,
+    segment.alpha = 0.55,
+    segment.size = 0.25,
+    max.overlaps = Inf,
+    seed = 1
+  ) +
+  
+  facet_wrap(~ region, ncol = 3, scales = "free_y") +
+  
+  scale_color_manual(
+    values = c("Δperc ≥ 0" = COL_POS, "Δperc < 0" = COL_NEG),
+    name = "Δ degree percentile"
+  ) +
+  
+  labs(
+    title = "Intersection-only: significant DGE ∩ top10% |Δ degree percentile|",
+    subtitle = sprintf(
+      "DGE: FDR ≤ %.2g and |log2FC| ≥ %.2g;  Δperc cutoff: top %.0f%% by |Δperc| within each region. Points shown = intersection only.",
+      FDR_CUT, LFC_CUT, 100*TOP_PCT
+    ),
+    x = "log2 fold-change (AD vs Control)",
+    y = "Δ degree percentile (perc_AD − perc_Control)"
+  ) +
+  
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15),
+    plot.subtitle = element_text(size = 11),
+    strip.text = element_text(face = "bold", size = 13),
+    panel.grid.minor = element_blank(),
+    legend.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold"),
+    plot.margin = margin(10, 20, 10, 20)
+  )
+
+# ============================================================
+# 6) SAVE
+# ============================================================
+write_tsv(hit_df, out_tsv)
+
+ggsave(out_png, p, width = 13.5, height = 8.5, dpi = 600)
+ggsave(out_pdf, p, width = 13.5, height = 8.5)
+
+message("\nSaved:")
+message(" - ", out_png)
+message(" - ", out_pdf)
+message(" - ", out_tsv)
+message("DONE ✅")

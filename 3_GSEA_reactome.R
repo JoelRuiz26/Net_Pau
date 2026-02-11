@@ -74,7 +74,7 @@ top5_up_down_by_region <- x %>%
     direction,
     desc(abs(NES))   # prioriza términos más enriquecidos
   ) %>%
-  slice_head(n = 5) %>%
+  slice_head(n = 4) %>%
   ungroup()
 
 # guardar tabla
@@ -121,44 +121,57 @@ plot_df2 <- top5_up_down_by_region %>%
   )
 
 p_altA <- ggplot(plot_df2, aes(region, term_simple)) +
-  geom_tile(aes(fill = NES, alpha = alpha_sig),
-            color = "grey92", linewidth = 0.4) +
-  geom_text(aes(label = star),
-            fontface = "bold", size = 4, color = "grey10") +
+  geom_tile(
+    aes(fill = NES, alpha = alpha_sig),
+    color = "grey92", linewidth = 0.4
+  ) +
+  geom_text(
+    aes(label = star),
+    fontface = "bold", size = 4, color = "grey10"
+  ) +
   scale_fill_gradient2(
     name = "NES",
-    low  = "#2F4B7C",
-    mid  = "#F4F4F4",
-    high = "#8B1E3F",
+    low  = "#2C7FB8",
+    mid  = "#F7F7F7",
+    high = "#D7301F",
     midpoint = 0
   ) +
   scale_alpha(guide = "none") +
-  labs(caption = "FDR: * ≤ 0.05, ** ≤ 0.01, *** ≤ 0.001") +
-  theme_minimal(base_size = 12) +
+  theme_minimal(base_size = 14) +
   theme(
     axis.title   = element_blank(),
     panel.grid   = element_blank(),
-    axis.text.y  = element_text(size = 9, face = "bold"),
-    axis.text.x  = element_text(size = 13, face = "bold"),
-    legend.title = element_text(face = "bold"),
-    legend.text  = element_text(face = "bold"),
-    plot.caption = element_text(size = 10, face = "bold", hjust = 0)
-  )
+    
+    # 👇 sutil y legible
+    axis.text.y  = element_text(size = 10, face = "bold"),
+    axis.text.x  = element_text(size = 14, face = "bold"),
+    
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text  = element_text(size = 12, face = "bold"),
+    
+    plot.caption = element_text(size = 10, face = "bold", hjust = 0),
+    
+    # ✅ "celdas grises" tipo volcano (strip gris #grey92)
+    axis.text.y.right = element_text(face = "bold"),
+    strip.background  = element_rect(fill = "grey92", color = NA),
+    strip.text        = element_text(face = "bold")
+  ) +
+  # ✅ esto crea el "strip" gris tipo volcano para la región
+  facet_grid(. ~ region, switch = "x")
 
-# Márgenes + guardar
-p2 <- p_altA + theme(plot.margin = margin(t = 8, r = 60, b = 8, l = 8))
+# Márgenes + guardar (menos agresivo que r = 60)
+p2 <- p_altA + theme(plot.margin = margin(t = 8, r = 25, b = 8, l = 8))
 
 save.image(file.path(out_dir, "3_4_Image_GSEA.RData"))
 #load("/STORAGE/csbig/jruiz/Redes_Pau/3_GSEA_REACTOME/3_4_Image_GSEA.RData")
 
 saveRDS(p2, file.path(out_dir, "3_3_Heatmap_Stars_alpha_plot.rds"))
 
-ggsave(file.path(out_dir, "3_3_Heatmap_Stars_alpha.png"),
-       p2, width = 16, height = 9, units = "in", dpi = 600, limitsize = FALSE)
+ggsave(
+  file.path(out_dir, "3_3_Heatmap_Stars_alpha.png"),
+  p2, width = 16, height = 9, units = "in", dpi = 600, limitsize = FALSE)
 
-ggsave(file.path(out_dir, "3_3_Heatmap_Stars_alpha.pdf"),
-       p2, width = 16, height = 9, units = "in", limitsize = FALSE, device = cairo_pdf)
-
-
-
-
+ggsave(
+  file.path(out_dir, "3_3_Heatmap_Stars_alpha.pdf"),
+  p2, width = 16, height = 9, units = "in",
+  limitsize = FALSE, device = cairo_pdf)
