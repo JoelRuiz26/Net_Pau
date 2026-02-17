@@ -12,14 +12,12 @@ suppressPackageStartupMessages({
   library(ggsci)  
 })
 
-#install.packages("ggsci")
-
 options(stringsAsFactors = FALSE)
 
 # ===================== CONFIG ===================== #
 base_dir <- "/STORAGE/csbig/jruiz/Redes_Pau"
 in_dir   <- file.path(base_dir, "4_DGE_centrality")
-out_dir  <- file.path(in_dir, "Quadrants_top10pct_LFC_vs_DeltaPerc_DGEonly_ONEPLOT")
+out_dir  <- file.path(in_dir, "4_2_plot_fout_scatter")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 TOP_PCT <- 0.10
