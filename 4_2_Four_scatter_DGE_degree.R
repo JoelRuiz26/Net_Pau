@@ -216,7 +216,7 @@ p <- ggplot() +
   scale_y_continuous(breaks = scales::pretty_breaks(n = 9)) +
   
   labs(
-    title = "Integrated expression and network centrality changes in Alzheimer’s disease",
+    #title = "Integrated expression and network centrality changes in Alzheimer’s disease",
     #    subtitle = "Highlighted genes show the strongest combined shifts in expression and connectivity.",
     x = "Expression change (log2 fold-change)",
     y = "Connectivity change (Delta degree)"
@@ -249,4 +249,4 @@ ggsave(file.path(out_dir, "4_2_1__Top10pct_LFC_vs_DeltaPerc.pdf"),
 
 saveRDS(deg_list2, file = file.path(out_dir, "4_2_1_deg_list2_all_regions.rds"))
 saveRDS(label_df, file = file.path(out_dir, "4_2_1_top10_genes.rds"))
-
+\

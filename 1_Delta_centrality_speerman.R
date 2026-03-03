@@ -25,14 +25,14 @@ networks <- list(
   MAYO_CRB = c("Mayo_CRB_counts_AD_topN200000.tsv",
                "Mayo_CRB_counts_control_topN200000.tsv"),
   MAYO_TC  = c("Mayo_TC_counts_AD_topN200000.tsv",
-               "Mayo_TC_counts_control_topN200000.tsv")
-)
+               "Mayo_TC_counts_control_topN200000.tsv"))
 
 centralities <- c("degree", "pagerank", "betweenness")
 
 # ============================================================
-# 1) LOAD (edgelist -> igraph)
+# 1) LOAD
 # ============================================================
+
 load_graph <- function(file) {
   df <- vroom(
     file.path(base_dir, "1_Edgelist", file),
